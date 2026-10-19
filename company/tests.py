@@ -1,7 +1,7 @@
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from core.tests.factories import create_user
+from core.tests.factories import create_admin, create_manager
 
 from .models import Company
 
@@ -17,15 +17,12 @@ class CompanyTests(TestCase):
         self.assertEqual(response.data['tx_name'], 'MINHA EMPRESA')
 
     def test_only_admin_can_edit(self):
-        self.client.force_authenticate(create_user())
+        self.client.force_authenticate(create_manager())
         response = self.client.patch('/api/company/', {'tx_name': 'Mercadinho Bom Preço'}, format='json')
         self.assertEqual(response.status_code, 403)
 
     def test_admin_edits_and_there_is_only_one_company(self):
-        admin = create_user(username='admin')
-        admin.is_staff = True
-        admin.save()
-        self.client.force_authenticate(admin)
+        self.client.force_authenticate(create_admin())
 
         response = self.client.patch('/api/company/', {'tx_name': 'Mercadinho Bom Preço'}, format='json')
 

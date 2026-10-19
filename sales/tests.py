@@ -1,6 +1,8 @@
 from decimal import Decimal
 
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from registry.models import UnitOfMeasure
 from core.exceptions import BusinessRuleError
@@ -65,6 +67,37 @@ class RegisterSaleTests(TestCase):
         sale = self.sell(nb_quantity='0.350', payments=[{'tx_method': PaymentMethod.PIX, 'nb_amount': Decimal('8.75')}])
 
         self.assertEqual(sale.nb_total, Decimal('8.75'))
+
+    def test_same_product_in_two_lines_is_lowered_in_sequence(self):
+        register_sale(
+            user=self.user,
+            items=[
+                {'id_product': self.product, 'nb_quantity': Decimal('3')},
+                {'id_product': self.product, 'nb_quantity': Decimal('4')},
+            ],
+            payments=[{'tx_method': PaymentMethod.PIX, 'nb_amount': Decimal('175.00')}],
+        )
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.nb_stock, Decimal('3'))
+        resulting = list(self.product.stock_movements.order_by('id_stock_movement').values_list('nb_resulting_stock', flat=True))
+        self.assertEqual(resulting, [Decimal('7'), Decimal('3')])
+
+    def test_sale_query_count_does_not_grow_with_items(self):
+        products = [create_product(f'Produto {i}', nb_stock=Decimal('10')) for i in range(20)]
+
+        def sell(count):
+            register_sale(
+                user=self.user,
+                items=[{'id_product': p, 'nb_quantity': Decimal('1')} for p in products[:count]],
+                payments=[{'tx_method': PaymentMethod.CASH, 'nb_amount': Decimal('1000')}],
+            )
+
+        with CaptureQueriesContext(connection) as small:
+            sell(2)
+        with CaptureQueriesContext(connection) as large:
+            sell(20)
+        self.assertEqual(len(small.captured_queries), len(large.captured_queries))
 
 
 class CancelSaleTests(TestCase):

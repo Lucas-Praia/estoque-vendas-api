@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 
 from registry.models import Product
 from core.exceptions import BusinessRuleError
@@ -9,27 +10,44 @@ from .models import MovementType, StockEntry, StockEntryItem, StockMovement
 
 
 @transaction.atomic
-def move_stock(*, product, nb_quantity, tx_type, user, tx_reason=''):
-    """Única porta de alteração do estoque: atualiza o saldo e grava o histórico."""
-    product = Product.objects.select_for_update().get(pk=product.pk)
-    new_stock = product.nb_stock + nb_quantity
+def move_stock_batch(*, lines, tx_type, user, tx_reason=''):
+    """Única porta de alteração do estoque: atualiza os saldos e grava o histórico.
 
-    if new_stock < 0:
-        raise BusinessRuleError(
-            f'Estoque insuficiente para {product.tx_description}. Disponível: {product.nb_stock}.'
+    lines: lista de (product, nb_quantity); quantidade positiva soma, negativa subtrai.
+    Trava todos os produtos de uma vez, sempre em ordem de id, para duas vendas
+    simultâneas nunca esperarem uma pela outra em ordem cruzada (deadlock).
+    """
+    product_ids = sorted({product.pk for product, _ in lines})
+    locked = {p.pk: p for p in Product.objects.select_for_update().filter(pk__in=product_ids).order_by('pk')}
+
+    now = timezone.now()
+    movements = []
+    for product, nb_quantity in lines:
+        current = locked[product.pk]
+        new_stock = current.nb_stock + nb_quantity
+        if new_stock < 0:
+            raise BusinessRuleError(
+                f'Estoque insuficiente para {current.tx_description}. Disponível: {current.nb_stock}.'
+            )
+        current.nb_stock = new_stock
+        current.dt_modified_at = now
+        movement = StockMovement(
+            id_product=current,
+            id_user=user,
+            tx_type=tx_type,
+            nb_quantity=nb_quantity,
+            nb_resulting_stock=new_stock,
+            tx_reason=tx_reason,
         )
+        movement._uppercase_texts()
+        movements.append(movement)
 
-    product.nb_stock = new_stock
-    product.save(update_fields=['nb_stock', 'dt_modified_at'])
+    Product.objects.bulk_update(locked.values(), ['nb_stock', 'dt_modified_at'])
+    return StockMovement.objects.bulk_create(movements)
 
-    return StockMovement.objects.create(
-        id_product=product,
-        id_user=user,
-        tx_type=tx_type,
-        nb_quantity=nb_quantity,
-        nb_resulting_stock=new_stock,
-        tx_reason=tx_reason,
-    )
+
+def move_stock(*, product, nb_quantity, tx_type, user, tx_reason=''):
+    return move_stock_batch(lines=[(product, nb_quantity)], tx_type=tx_type, user=user, tx_reason=tx_reason)[0]
 
 
 @transaction.atomic
@@ -46,23 +64,22 @@ def register_stock_entry(*, user, id_supplier, items, tx_invoice_number='', dt_e
         entry.dt_entry = dt_entry
     entry.save()
 
-    for item in items:
-        product = item['id_product']
-        StockEntryItem.objects.create(
+    StockEntryItem.objects.bulk_create(
+        StockEntryItem(
             id_stock_entry=entry,
-            id_product=product,
+            id_product=item['id_product'],
             nb_quantity=item['nb_quantity'],
             nb_unit_cost=item['nb_unit_cost'],
         )
-        move_stock(
-            product=product,
-            nb_quantity=item['nb_quantity'],
-            tx_type=MovementType.IN,
-            user=user,
-            tx_reason=f'Entrada #{entry.pk}',
-        )
-        product.nb_cost_price = item['nb_unit_cost']
-        product.save(update_fields=['nb_cost_price', 'dt_modified_at'])
+        for item in items
+    )
+    move_stock_batch(
+        lines=[(item['id_product'], item['nb_quantity']) for item in items],
+        tx_type=MovementType.IN,
+        user=user,
+        tx_reason=f'Entrada #{entry.pk}',
+    )
+    _update_cost_prices(items)
 
     return entry
 
@@ -82,3 +99,13 @@ def adjust_stock(*, user, id_product, nb_counted_stock, tx_reason):
         user=user,
         tx_reason=tx_reason,
     )
+
+
+def _update_cost_prices(items):
+    """Grava o último custo pago. Usa save() (e não update em lote) para a mudança de preço ficar na auditoria;
+    só salva quando o custo de fato mudou, que é a minoria dos itens de uma nota."""
+    last_cost = {item['id_product'].pk: (item['id_product'], item['nb_unit_cost']) for item in items}
+    for product, nb_unit_cost in last_cost.values():
+        if product.nb_cost_price != nb_unit_cost:
+            product.nb_cost_price = nb_unit_cost
+            product.save(update_fields=['nb_cost_price', 'dt_modified_at'])

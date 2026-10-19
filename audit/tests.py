@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from core.tests.factories import create_product, create_supplier, create_user
+from core.tests.factories import create_admin, create_manager, create_operator, create_product, create_supplier, create_user
 from inventory.services import register_stock_entry
 
 from .models import AuditAction, AuditLog
@@ -12,7 +12,7 @@ from .models import AuditAction, AuditLog
 class AuditTrailTests(TestCase):
     def setUp(self):
         self.client = APIClient()
-        self.user = create_user(username='gerente')
+        self.user = create_manager()
         self.client.force_authenticate(self.user)
 
     def test_create_via_api_records_user_and_request_id(self):
@@ -79,13 +79,10 @@ class LoginAuditTests(TestCase):
 class AuditAccessTests(TestCase):
     def test_only_admin_reads_audit_log(self):
         client = APIClient()
-        client.force_authenticate(create_user())
+        client.force_authenticate(create_operator())
         self.assertEqual(client.get('/api/audit_log/').status_code, 403)
 
-        admin = create_user(username='admin')
-        admin.is_staff = True
-        admin.save()
-        client.force_authenticate(admin)
+        client.force_authenticate(create_admin())
         self.assertEqual(client.get('/api/audit_log/').status_code, 200)
 
 

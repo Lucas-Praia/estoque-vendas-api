@@ -84,6 +84,7 @@ class Sale(BaseModel):
     class Meta:
         ordering = ['-dt_created_at']
         verbose_name = 'venda'
+        indexes = [models.Index(fields=['dt_created_at'], name='sale_dt_created_at_idx')]
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(nb_discount__lte=models.F('nb_subtotal')),

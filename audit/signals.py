@@ -1,6 +1,8 @@
 from django.apps import apps
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.contrib.auth.signals import user_logged_in, user_login_failed
-from django.db.models.signals import post_delete, post_save, pre_save
+from django.db.models.signals import m2m_changed, post_delete, post_save, pre_save
 
 from . import recorder
 from .models import AuditAction
@@ -26,6 +28,7 @@ def connect():
         post_save.connect(_record_save, sender=model, dispatch_uid=f'audit_post_save_{label}')
         post_delete.connect(_record_delete, sender=model, dispatch_uid=f'audit_post_delete_{label}')
 
+    m2m_changed.connect(_record_groups_change, sender=get_user_model().groups.through, dispatch_uid='audit_user_groups')
     user_logged_in.connect(_record_login, dispatch_uid='audit_user_logged_in')
     user_login_failed.connect(_record_login_failed, dispatch_uid='audit_user_login_failed')
 
@@ -52,6 +55,15 @@ def _record_save(sender, instance, created, **kwargs):
 
 def _record_delete(sender, instance, **kwargs):
     recorder.record(AuditAction.DELETE, instance=instance, changes=recorder.masked(recorder.snapshot(instance)))
+
+
+def _record_groups_change(sender, instance, action, reverse, pk_set, **kwargs):
+    """Quem deu ou tirou qual perfil de quem: mudança de grupo não passa pelo post_save."""
+    if reverse or action not in {'post_add', 'post_remove'} or not pk_set:
+        return
+    names = sorted(Group.objects.filter(pk__in=pk_set).values_list('name', flat=True))
+    key = 'added' if action == 'post_add' else 'removed'
+    recorder.record(AuditAction.UPDATE, instance=instance, changes={'groups': {key: names}})
 
 
 def _record_login(sender, request, user, **kwargs):

@@ -168,6 +168,7 @@ class StockMovement(BaseModel):
     class Meta:
         ordering = ['-dt_created_at']
         verbose_name = 'movimentação de estoque'
+        indexes = [models.Index(fields=['dt_created_at'], name='stock_movement_dt_created_idx')]
         verbose_name_plural = 'movimentações de estoque'
 
     def __str__(self):

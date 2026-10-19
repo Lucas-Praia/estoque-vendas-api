@@ -6,7 +6,7 @@ from django.utils import timezone
 from registry.models import UnitOfMeasure
 from core.exceptions import BusinessRuleError
 from inventory.models import MovementType
-from inventory.services import move_stock
+from inventory.services import move_stock_batch
 
 from .models import Payment, PaymentMethod, Sale, SaleItem, SaleStatus
 
@@ -44,32 +44,22 @@ def register_sale(*, user, items, payments, nb_discount=Decimal('0'), id_custome
         nb_total=nb_total,
     )
 
-    for item in items:
-        product = item['id_product']
-        SaleItem.objects.create(
+    SaleItem.objects.bulk_create(
+        SaleItem(
             id_sale=sale,
-            id_product=product,
+            id_product=item['id_product'],
             nb_quantity=item['nb_quantity'],
-            nb_unit_price=product.nb_price,
+            nb_unit_price=item['id_product'].nb_price,
         )
-        move_stock(
-            product=product,
-            nb_quantity=-item['nb_quantity'],
-            tx_type=MovementType.OUT,
-            user=user,
-            tx_reason=f'Venda #{sale.pk}',
-        )
-
-    for payment in payments:
-        payment_change = nb_change if payment['tx_method'] == PaymentMethod.CASH else Decimal('0')
-        Payment.objects.create(
-            id_sale=sale,
-            tx_method=payment['tx_method'],
-            nb_amount=payment['nb_amount'],
-            nb_change=payment_change,
-        )
-        if payment_change:
-            nb_change = Decimal('0')
+        for item in items
+    )
+    move_stock_batch(
+        lines=[(item['id_product'], -item['nb_quantity']) for item in items],
+        tx_type=MovementType.OUT,
+        user=user,
+        tx_reason=f'Venda #{sale.pk}',
+    )
+    Payment.objects.bulk_create(_build_payments(sale, payments, nb_change))
 
     return sale
 
@@ -81,19 +71,33 @@ def cancel_sale(*, sale, user):
     if sale.tx_status == SaleStatus.CANCELED:
         raise BusinessRuleError(f'A venda #{sale.pk} já está cancelada.')
 
-    for item in sale.items.select_related('id_product'):
-        move_stock(
-            product=item.id_product,
-            nb_quantity=item.nb_quantity,
-            tx_type=MovementType.IN,
-            user=user,
-            tx_reason=f'Cancelamento da venda #{sale.pk}',
-        )
+    move_stock_batch(
+        lines=[(item.id_product, item.nb_quantity) for item in sale.items.select_related('id_product')],
+        tx_type=MovementType.IN,
+        user=user,
+        tx_reason=f'Cancelamento da venda #{sale.pk}',
+    )
 
     sale.tx_status = SaleStatus.CANCELED
     sale.dt_canceled_at = timezone.now()
     sale.save(update_fields=['tx_status', 'dt_canceled_at', 'dt_modified_at'])
     return sale
+
+
+def _build_payments(sale, payments, nb_change):
+    """O troco fica registrado no primeiro pagamento em dinheiro."""
+    built = []
+    for payment in payments:
+        payment_change = nb_change if payment['tx_method'] == PaymentMethod.CASH else Decimal('0')
+        built.append(Payment(
+            id_sale=sale,
+            tx_method=payment['tx_method'],
+            nb_amount=payment['nb_amount'],
+            nb_change=payment_change,
+        ))
+        if payment_change:
+            nb_change = Decimal('0')
+    return built
 
 
 def _validate_item(product, nb_quantity):

@@ -3,6 +3,8 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from accounts.permissions import IsManager
+
 from . import services
 from .filters import StockEntryFilter, StockMovementFilter
 from .models import StockEntry, StockMovement
@@ -19,6 +21,7 @@ class StockEntryViewSet(mixins.CreateModelMixin, viewsets.ReadOnlyModelViewSet):
 
     queryset = StockEntry.objects.select_related('id_supplier', 'id_user').prefetch_related('items__id_product')
     serializer_class = StockEntrySerializer
+    permission_classes = [IsManager]
     filterset_class = StockEntryFilter
     ordering_fields = '__all__'
     ordering = '-id_stock_entry'
@@ -37,6 +40,7 @@ class StockEntryViewSet(mixins.CreateModelMixin, viewsets.ReadOnlyModelViewSet):
 class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = StockMovement.objects.select_related('id_product', 'id_user')
     serializer_class = StockMovementSerializer
+    permission_classes = [IsManager]
     filterset_class = StockMovementFilter
     ordering_fields = '__all__'
     ordering = '-id_stock_movement'
